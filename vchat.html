@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; img-src data: blob:; media-src blob:; connect-src wss://broker.hivemq.com:8884; worker-src blob:; base-uri 'none'; form-action 'none'">
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<title>vchat</title>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#666;--line:#ccc;--btn:#e4e4e4;--sel:#eee}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#eee;--mut:#999;--line:#444;--btn:#2c2c2c;--sel:#262626}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif}
+#app{max-width:900px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0}
+.top{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px}
+.me{display:flex;gap:6px;align-items:center}
+.me input{width:150px}
+.hint{color:var(--mut);font-size:12px;margin:6px 0}
+input,button{font:inherit;color:var(--fg)}
+input[type=text]{height:30px;padding:2px 6px;border:1px solid var(--line);background:var(--bg);min-width:0}
+button{height:30px;padding:0 12px;border:1px solid var(--line);background:var(--btn);cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.danger{color:#c33}
+.tabs{display:flex;border:1px solid var(--line);margin:0 0 14px}
+.tabs button{flex:1;height:34px;border:0;border-right:1px solid var(--line);background:var(--bg)}
+.tabs button:last-child{border-right:0}
+.tabs button.on{background:var(--sel);font-weight:700}
+.chk{display:flex;align-items:flex-start;gap:6px;margin:8px 0}
+.chk input{margin-top:3px}
+.bar{display:flex;gap:8px;align-items:center;margin:10px 0;flex-wrap:wrap}
+.bar input[type=text]{flex:1;text-transform:uppercase;letter-spacing:2px}
+.box{border:1px solid var(--line);padding:10px 12px;margin:10px 0}
+#status{margin:8px 0;color:var(--mut)}
+#grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:8px}
+.tile{position:relative;background:#000;aspect-ratio:4/3;overflow:hidden}
+.tile video{width:100%;height:100%;object-fit:cover;display:block}
+.tile .lab{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.6);color:#fff;padding:2px 8px;font-size:12px}
+.tile.blur video{filter:blur(30px)}
+.tile .reveal{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+.tile.mine{opacity:.95}
+.ctrl{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+#log{height:150px;overflow-y:auto;border:1px solid var(--line);padding:6px 8px;overflow-wrap:anywhere}
+#log .sys{color:var(--mut)}
+.chat{display:flex;gap:8px;margin-top:6px}
+.chat input{flex:1}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="top">
+    <h1>vchat</h1>
+    <div class="me"><input id="nameIn" type="text" maxlength="20" aria-label="Username"><button id="nameSave">Change name</button></div>
+  </div>
+  <div id="nameMsg" class="hint"></div>
+
+  <div id="pick">
+    <div class="tabs"><button id="tR" class="on">Random</button><button id="tG">Rooms</button></div>
+    <div class="chk"><input id="useCam" type="checkbox" checked><label for="useCam">Use my camera</label></div>
+    <div class="chk"><input id="useMic" type="checkbox" checked><label for="useMic">Use my microphone</label></div>
+
+    <div id="pRandom">
+      <div class="box hint" style="color:var(--fg)">
+        Random chat connects you with a stranger. Strangers can show or say anything: their video and sound stay hidden until you press <b>Show</b>. Skip or block anyone who makes you uncomfortable, and never share personal information. There is no moderator.
+      </div>
+      <div class="chk"><input id="adult" type="checkbox"><label for="adult">I am 18 or older, and I will not show nudity, harass anyone, or record other people.</label></div>
+      <div class="bar"><button id="rStart" class="primary" disabled>Start random chat</button></div>
+    </div>
+
+    <div id="pRooms" hidden>
+      <div class="hint">Rooms are private: only people who have the code can join (up to 6 people).</div>
+      <div class="bar"><button id="gCreate" class="primary">Create a room</button></div>
+      <div class="bar"><input id="gCode" type="text" maxlength="6" placeholder="Room code" autocomplete="off" spellcheck="false"><button id="gJoin">Join</button></div>
+    </div>
+    <div id="pickMsg" class="hint"></div>
+  </div>
+
+  <div id="call" hidden>
+    <div id="status"></div>
+    <div id="roomBar" class="bar" hidden><span id="roomCode" style="font:700 20px monospace;letter-spacing:3px"></span><button id="copyLink">Copy link</button><button id="copyCode">Copy code</button></div>
+    <div id="grid"></div>
+    <div class="ctrl">
+      <button id="bMic">Mute mic</button>
+      <button id="bCam">Camera off</button>
+      <button id="bNext" class="primary" hidden>Next</button>
+      <button id="bBlock" class="danger" hidden>Block and next</button>
+      <button id="bLeave" class="danger">Leave</button>
+    </div>
+    <div id="log"></div>
+    <div class="chat"><input id="msg" type="text" maxlength="500" placeholder="Type a message" autocomplete="off"><button id="send">Send</button></div>
+  </div>
+</div>
+<script>
+var $ = function (id) { return document.getElementById(id); };
+var BROKER = "wss://broker.hivemq.com:8884/mqtt";
+var ICE = [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }];
+var PREFIX = "vchat-v1/", ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789", MAXR = 6;
+function noop() {}
+function randStr(n) {
+  var b = crypto.getRandomValues(new Uint8Array(n)), s = "", i;
+  for (i = 0; i < n; i++) s += ALPHA[b[i] % 32];
+  return s;
+}
+function cleanName(s) { return String(s || "").replace(/[\u0000-\u001f\u007f<>]/g, "").trim().slice(0, 20); }
+function store(k, v) {
+  try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) {}
+  return null;
+}
+var me = { id: store("vchat_id"), name: cleanName(store("vchat_name")) };
+if (!/^[A-Z2-9]{8}$/.test(me.id || "")) me.id = randStr(8);
+if (!me.name) me.name = "Guest" + (1000 + Math.floor(Math.random() * 9000));
+store("vchat_id", me.id); store("vchat_name", me.name);
+var blocked = [];
+try { blocked = JSON.parse(store("vchat_block") || "[]").filter(function (x) { return /^[A-Z2-9]{8}$/.test(x); }); } catch (e) {}
+function tagOf(id) { return "#" + id.slice(0, 4); }
+function labelOf(name, id) { return (name || "Someone") + " " + tagOf(id); }
+
+var mq = null, handlers = {};
+function mqConnect() {
+  if (mq) return mq;
+  mq = mqtt.connect(BROKER, { clean: true, keepalive: 30, reconnectPeriod: 2000, connectTimeout: 15000 });
+  mq.on("message", function (topic, payload) {
+    var h = handlers[topic], o;
+    if (!h) return;
+    try { o = JSON.parse(payload.toString()); } catch (e) { return; }
+    if (o && typeof o === "object") h(o);
+  });
+  return mq;
+}
+function mqOn(topic, fn) { handlers[topic] = fn; mqConnect().subscribe(topic, { qos: 0 }); }
+function mqOff(topic) { delete handlers[topic]; if (mq) mq.unsubscribe(topic); }
+function mqSend(topic, o) { mqConnect().publish(topic, JSON.stringify(o), { qos: 0 }); }
+
+var mode = "idle", ctx = "", local = null, P = {}, room = "", R = { state: "off", peer: "", cand: {}, recent: {}, pub: 0, inv: 0, wait: 0 }, joinTimer = 0, joinTries = 0;
+function validId(x) { return typeof x === "string" && /^[A-Z2-9]{8}$/.test(x) && x !== me.id && blocked.indexOf(x) < 0; }
+function sendTo(id, o) { o.from = me.id; o.ctx = ctx; mqSend(PREFIX + "U/" + id, o); }
+function note(t) { var d = document.createElement("div"); d.className = "sys"; d.textContent = t; addLine(d); }
+function addLine(d) {
+  var l = $("log");
+  l.appendChild(d);
+  while (l.children.length > 200) l.removeChild(l.firstChild);
+  l.scrollTop = l.scrollHeight;
+}
+function chatLine(who, text) {
+  var d = document.createElement("div"), b = document.createElement("b");
+  b.textContent = who + ": "; d.appendChild(b); d.appendChild(document.createTextNode(text));
+  addLine(d);
+}
+function setStatus(t) { $("status").textContent = t; }
+function addIce(p, c) { if (p.pc.remoteDescription) p.pc.addIceCandidate(c).catch(noop); else p.q.push(c); }
+function flushIce(p) { p.q.forEach(function (c) { p.pc.addIceCandidate(c).catch(noop); }); p.q = []; }
+
+async function getMedia() {
+  var cam = $("useCam").checked, mic = $("useMic").checked;
+  if (!cam && !mic) return null;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $("pickMsg").textContent = "This browser cannot use the camera or microphone here. Joining without them."; return null; }
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      video: cam ? { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } } : false,
+      audio: mic ? { echoCancellation: true, noiseSuppression: true } : false
+    });
+  } catch (e) {
+    $("pickMsg").textContent = "Could not use the camera or microphone (" + (e && e.name ? e.name : "error") + "). Joining without them, so you can see and read others.";
+    return null;
+  }
+}
+
+function makeTile(p) {
+  var t = document.createElement("div"), v = document.createElement("video"), l = document.createElement("div");
+  t.className = "tile" + (mode === "random" ? " blur" : "");
+  v.autoplay = true; v.playsInline = true; v.muted = mode === "random";
+  l.className = "lab"; l.textContent = labelOf(p.name, p.id) + " (connecting…)";
+  t.appendChild(v); t.appendChild(l);
+  if (mode === "random") {
+    var b = document.createElement("button");
+    b.className = "reveal"; b.textContent = "Show";
+    b.onclick = function () { t.classList.remove("blur"); v.muted = false; v.play().catch(noop); b.remove(); };
+    t.appendChild(b);
+  }
+  p.tile = t; p.vid = v; p.lab = l;
+  $("grid").appendChild(t);
+}
+function paintTile(p) { if (p.lab) p.lab.textContent = labelOf(p.name, p.id) + (p.pc.connectionState === "connected" ? "" : " (connecting…)"); }
+function newPeer(id, initiator) {
+  var pc = new RTCPeerConnection({ iceServers: ICE }), p = { id: id, name: "", pc: pc, dc: null, q: [], t: 0 };
+  P[id] = p;
+  if (local && local.getTracks().length) local.getTracks().forEach(function (t) { pc.addTrack(t, local); });
+  else if (initiator) { pc.addTransceiver("audio", { direction: "recvonly" }); pc.addTransceiver("video", { direction: "recvonly" }); }
+  pc.onicecandidate = function (e) { if (e.candidate) sendTo(id, { t: "ice", c: e.candidate }); };
+  pc.ontrack = function (e) { if (p.vid && p.vid.srcObject !== e.streams[0]) { p.vid.srcObject = e.streams[0]; p.vid.play().catch(noop); } };
+  pc.onconnectionstatechange = function () {
+    var s = pc.connectionState;
+    clearTimeout(p.t);
+    if (s === "failed" || s === "closed") dropPeer(id, "connection lost");
+    else if (s === "disconnected") p.t = setTimeout(function () { if (pc.connectionState !== "connected") dropPeer(id, "connection lost"); }, 8000);
+    paintTile(p); refreshStatus();
+  };
+  if (initiator) setupDC(p, pc.createDataChannel("c")); else pc.ondatachannel = function (e) { setupDC(p, e.channel); };
+  makeTile(p);
+  return p;
+}
+function setupDC(p, dc) {
+  p.dc = dc;
+  dc.onopen = function () { dc.send(JSON.stringify({ t: "hello", name: me.name })); };
+  dc.onmessage = function (e) {
+    var o;
+    try { o = JSON.parse(e.data); } catch (x) { return; }
+    if (!o || typeof o !== "object") return;
+    if (o.t === "hello" || o.t === "name") {
+      var nn = cleanName(o.name);
+      if (o.t === "name" && p.name && nn && nn !== p.name) note(labelOf(p.name, p.id) + " is now " + labelOf(nn, p.id));
+      if (nn) { p.name = nn; paintTile(p); refreshStatus(); }
+      if (o.t === "hello" && mode === "random") note("You are chatting with " + labelOf(p.name, p.id) + ".");
+    } else if (o.t === "chat" && typeof o.text === "string") chatLine(labelOf(p.name, p.id), o.text.slice(0, 500));
+    else if (o.t === "bye") dropPeer(p.id, "left");
+  };
+}
+function offerTo(p) {
+  p.pc.createOffer().then(function (d) { return p.pc.setLocalDescription(d); })
+    .then(function () { sendTo(p.id, { t: "offer", sdp: p.pc.localDescription.sdp }); }).catch(noop);
+}
+function dropPeer(id, why, silent) {
+  var p = P[id];
+  if (!p) return;
+  clearTimeout(p.t);
+  try { if (p.dc && p.dc.readyState === "open") p.dc.send(JSON.stringify({ t: "bye" })); } catch (e) {}
+  p.pc.onconnectionstatechange = null;
+  try { p.pc.close(); } catch (e) {}
+  if (p.tile) p.tile.remove();
+  delete P[id];
+  if (silent) return;
+  if (why) note(labelOf(p.name, id) + " " + (why === "left" ? "left." : "disconnected."));
+  if (mode === "random" && R.peer === id) randNext(false);
+  else refreshStatus();
+}
+function refreshStatus() {
+  var n = Object.keys(P).filter(function (k) { return P[k].pc.connectionState === "connected"; }).length;
+  if (mode === "room") setStatus("Room " + room + ": " + (n + 1) + " " + (n ? "people here" : "person here (waiting for others)"));
+  else if (mode === "random" && R.state === "matched" && P[R.peer]) setStatus(P[R.peer].pc.connectionState === "connected" ? "Connected with " + labelOf(P[R.peer].name, R.peer) : "Connecting…");
+}
+
+function onDirect(o) {
+  var p, from = o.from;
+  if (!validId(from) || o.ctx !== ctx) return;
+  if (mode === "random") return onRandomDirect(o);
+  if (o.t === "offer" && typeof o.sdp === "string") {
+    p = P[from];
+    if (p && p.pc.signalingState === "have-local-offer") { if (me.id < from) return; dropPeer(from, null, true); p = null; }
+    else if (p) { dropPeer(from, null, true); p = null; }
+    if (Object.keys(P).length + 1 >= MAXR) { sendTo(from, { t: "full" }); return; }
+    p = newPeer(from, false);
+    p.pc.setRemoteDescription({ type: "offer", sdp: o.sdp }).then(function () { flushIce(p); return p.pc.createAnswer(); })
+      .then(function (d) { return p.pc.setLocalDescription(d); })
+      .then(function () { sendTo(from, { t: "answer", sdp: p.pc.localDescription.sdp }); }).catch(noop);
+  } else if (o.t === "answer" && P[from] && typeof o.sdp === "string") {
+    p = P[from];
+    if (p.pc.signalingState === "have-local-offer") p.pc.setRemoteDescription({ type: "answer", sdp: o.sdp }).then(function () { flushIce(p); }).catch(noop);
+  } else if (o.t === "ice" && P[from] && o.c) addIce(P[from], o.c);
+  else if (o.t === "full" && !Object.keys(P).length) { setStatus("This room is full."); }
+  else if (o.t === "bye") dropPeer(from, "left");
+}
+
+function startPublishing() {
+  clearInterval(R.pub);
+  function pubOnce() { if (R.state === "wait") mqSend(PREFIX + "L/wait", { t: "wait", from: me.id, name: me.name }); }
+  pubOnce();
+  R.pub = setInterval(pubOnce, 2500);
+}
+function onLobby(o) {
+  if (o.t !== "wait" || !validId(o.from) || R.state === "off") return;
+  R.cand[o.from] = Date.now();
+  tryInvite();
+}
+function tryInvite() {
+  var now = Date.now(), ids, id;
+  if (R.state !== "wait") return;
+  ids = Object.keys(R.cand).filter(function (k) { return now - R.cand[k] < 8000 && !(R.recent[k] && now - R.recent[k] < 60000) && blocked.indexOf(k) < 0; });
+  if (!ids.length) return;
+  id = ids[Math.floor(Math.random() * ids.length)];
+  R.state = "inviting"; R.peer = id;
+  sendTo(id, { t: "invite" });
+  clearTimeout(R.inv);
+  R.inv = setTimeout(function () {
+    if (R.state === "inviting") { delete R.cand[id]; R.state = "wait"; R.peer = ""; setTimeout(tryInvite, 300 + Math.random() * 1200); }
+  }, 3000);
+}
+function onRandomDirect(o) {
+  var from = o.from, p;
+  if (o.t === "invite") {
+    if (R.state === "wait" && blocked.indexOf(from) < 0) {
+      R.state = "matched"; R.peer = from; clearInterval(R.pub);
+      sendTo(from, { t: "accept" });
+      setStatus("Connecting…");
+      clearTimeout(R.wait);
+      R.wait = setTimeout(function () { if (R.state === "matched" && !P[R.peer]) randNext(false); }, 10000);
+    } else sendTo(from, { t: "decline" });
+  } else if (o.t === "accept" && R.state === "inviting" && R.peer === from) {
+    clearTimeout(R.inv); R.state = "matched"; clearInterval(R.pub);
+    setStatus("Connecting…");
+    offerTo(newPeer(from, true));
+  } else if (o.t === "decline" && R.state === "inviting" && R.peer === from) {
+    clearTimeout(R.inv); delete R.cand[from]; R.state = "wait"; R.peer = "";
+    setTimeout(tryInvite, 200 + Math.random() * 800);
+  } else if (o.t === "offer" && R.state === "matched" && R.peer === from && typeof o.sdp === "string" && !P[from]) {
+    clearTimeout(R.wait);
+    p = newPeer(from, false);
+    p.pc.setRemoteDescription({ type: "offer", sdp: o.sdp }).then(function () { flushIce(p); return p.pc.createAnswer(); })
+      .then(function (d) { return p.pc.setLocalDescription(d); })
+      .then(function () { sendTo(from, { t: "answer", sdp: p.pc.localDescription.sdp }); }).catch(noop);
+  } else if (o.t === "answer" && P[from] && R.peer === from && typeof o.sdp === "string") {
+    p = P[from];
+    if (p.pc.signalingState === "have-local-offer") p.pc.setRemoteDescription({ type: "answer", sdp: o.sdp }).then(function () { flushIce(p); }).catch(noop);
+  } else if (o.t === "ice" && P[from] && R.peer === from && o.c) addIce(P[from], o.c);
+  else if (o.t === "bye" && R.peer === from) { if (P[from]) dropPeer(from, "left"); else randNext(false); }
+}
+function randNext(block) {
+  var old = R.peer;
+  clearTimeout(R.inv); clearTimeout(R.wait);
+  if (old) {
+    R.recent[old] = Date.now();
+    if (block && blocked.indexOf(old) < 0) { blocked.push(old); store("vchat_block", JSON.stringify(blocked.slice(-500))); note("Blocked " + tagOf(old) + "."); }
+    if (P[old]) dropPeer(old, null, true);
+    sendTo(old, { t: "bye" });
+  }
+  R.peer = ""; R.state = "wait";
+  setStatus("Looking for someone…");
+  startPublishing();
+  setTimeout(tryInvite, 500);
+}
+
+function showCall(isRoom) {
+  $("pick").hidden = true; $("call").hidden = false;
+  $("roomBar").hidden = !isRoom;
+  $("bNext").hidden = isRoom; $("bBlock").hidden = isRoom;
+  $("log").textContent = ""; $("grid").textContent = "";
+  var t = document.createElement("div"), v = document.createElement("video"), l = document.createElement("div");
+  t.className = "tile mine"; v.autoplay = true; v.playsInline = true; v.muted = true;
+  l.className = "lab"; l.id = "myLab"; l.textContent = "You (" + me.name + ")";
+  if (local) v.srcObject = local;
+  t.appendChild(v); t.appendChild(l); $("grid").appendChild(t);
+  $("bMic").hidden = !(local && local.getAudioTracks().length);
+  $("bCam").hidden = !(local && local.getVideoTracks().length);
+  $("bMic").textContent = "Mute mic"; $("bCam").textContent = "Camera off";
+}
+async function startRandom() {
+  if (typeof mqtt === "undefined") { $("pickMsg").textContent = "Could not load the connection library. Check your internet connection and reload."; return; }
+  $("rStart").disabled = true;
+  local = await getMedia();
+  mode = "random"; ctx = "random"; R = { state: "wait", peer: "", cand: {}, recent: {}, pub: 0, inv: 0, wait: 0 };
+  showCall(false);
+  setStatus("Looking for someone…");
+  mqOn(PREFIX + "U/" + me.id, onDirect);
+  mqOn(PREFIX + "L/wait", onLobby);
+  startPublishing();
+}
+function announce() { mqSend(PREFIX + "R/" + room + "/s", { t: "join", from: me.id, name: me.name }); }
+function onRoom(o) {
+  var p;
+  if (!validId(o.from)) return;
+  if (o.t === "join") {
+    p = P[o.from];
+    if (p && p.pc.connectionState === "connected") return;
+    if (!p && Object.keys(P).length + 1 >= MAXR) { sendTo(o.from, { t: "full" }); return; }
+    if (p) dropPeer(o.from, null, true);
+    offerTo(newPeer(o.from, true));
+  } else if (o.t === "bye") dropPeer(o.from, "left");
+}
+async function joinRoom(code) {
+  if (typeof mqtt === "undefined") { $("pickMsg").textContent = "Could not load the connection library. Check your internet connection and reload."; return; }
+  if (!/^[A-Z2-9]{6}$/.test(code)) { $("pickMsg").textContent = "That room code does not look right."; return; }
+  local = await getMedia();
+  mode = "room"; room = code; ctx = "r:" + code;
+  showCall(true);
+  $("roomCode").textContent = code;
+  mqOn(PREFIX + "U/" + me.id, onDirect);
+  mqOn(PREFIX + "R/" + code + "/s", onRoom);
+  announce();
+  joinTries = 0;
+  clearInterval(joinTimer);
+  joinTimer = setInterval(function () {
+    var n = Object.keys(P).length;
+    if (n || ++joinTries > 3) { clearInterval(joinTimer); return; }
+    announce();
+  }, 4000);
+  refreshStatus();
+}
+function leaveAll() {
+  clearInterval(R.pub); clearTimeout(R.inv); clearTimeout(R.wait); clearInterval(joinTimer);
+  Object.keys(P).forEach(function (id) { dropPeer(id, null, true); sendTo(id, { t: "bye" }); });
+  if (mode === "room") mqSend(PREFIX + "R/" + room + "/s", { t: "bye", from: me.id });
+  mqOff(PREFIX + "U/" + me.id);
+  if (mode === "random") mqOff(PREFIX + "L/wait");
+  if (mode === "room") mqOff(PREFIX + "R/" + room + "/s");
+  if (local) local.getTracks().forEach(function (t) { t.stop(); });
+  local = null; mode = "idle"; ctx = ""; room = ""; R.state = "off"; R.peer = "";
+  $("call").hidden = true; $("pick").hidden = false; $("rStart").disabled = !$("adult").checked;
+  $("pickMsg").textContent = "";
+}
+
+function sendChat() {
+  var t = $("msg").value.trim().slice(0, 500), n = 0;
+  if (!t) return;
+  Object.keys(P).forEach(function (id) {
+    var p = P[id];
+    if (p.dc && p.dc.readyState === "open") { p.dc.send(JSON.stringify({ t: "chat", text: t })); n++; }
+  });
+  if (!n) { note("Nobody is connected yet."); return; }
+  chatLine("You", t);
+  $("msg").value = "";
+}
+function saveName() {
+  var n = cleanName($("nameIn").value);
+  if (n.length < 2) { $("nameMsg").textContent = "Pick a name with at least 2 characters."; return; }
+  me.name = n; store("vchat_name", n);
+  $("nameIn").value = n;
+  $("nameMsg").textContent = "Your name is now " + n + " " + tagOf(me.id) + ".";
+  if ($("myLab")) $("myLab").textContent = "You (" + n + ")";
+  Object.keys(P).forEach(function (id) { var p = P[id]; if (p.dc && p.dc.readyState === "open") p.dc.send(JSON.stringify({ t: "name", name: n })); });
+}
+function copyTxt(t, btn) {
+  var o = btn.textContent;
+  function ok() { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = o; }, 3000); }
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(ok, function () { prompt("Copy:", t); });
+  else prompt("Copy:", t);
+}
+function roomLink() { return /^https?:$/.test(location.protocol) ? location.href.split("#")[0] + "#R/" + room : room; }
+
+function showTab(t) {
+  $("pRandom").hidden = t !== "r"; $("pRooms").hidden = t !== "g";
+  $("tR").className = t === "r" ? "on" : ""; $("tG").className = t === "g" ? "on" : "";
+}
+$("tR").onclick = function () { showTab("r"); };
+$("tG").onclick = function () { showTab("g"); };
+$("adult").onchange = function () { $("rStart").disabled = !this.checked; };
+$("rStart").onclick = startRandom;
+$("gCreate").onclick = function () { joinRoom(randStr(6)); };
+$("gJoin").onclick = function () { joinRoom($("gCode").value.toUpperCase().replace(/[^A-Z0-9]/g, "")); };
+$("gCode").onkeydown = function (e) { if (e.key === "Enter") $("gJoin").click(); };
+$("bNext").onclick = function () { note("You skipped."); randNext(false); };
+$("bBlock").onclick = function () { if (R.peer) randNext(true); };
+$("bLeave").onclick = leaveAll;
+$("bMic").onclick = function () {
+  var on;
+  local.getAudioTracks().forEach(function (t) { t.enabled = !t.enabled; on = t.enabled; });
+  this.textContent = on ? "Mute mic" : "Unmute mic";
+};
+$("bCam").onclick = function () {
+  var on;
+  local.getVideoTracks().forEach(function (t) { t.enabled = !t.enabled; on = t.enabled; });
+  this.textContent = on ? "Camera off" : "Camera on";
+};
+$("send").onclick = sendChat;
+$("msg").onkeydown = function (e) { if (e.key === "Enter") sendChat(); };
+$("nameSave").onclick = saveName;
+$("nameIn").onkeydown = function (e) { if (e.key === "Enter") saveName(); };
+$("copyLink").onclick = function () { copyTxt(roomLink(), this); };
+$("copyCode").onclick = function () { copyTxt(room, this); };
+window.addEventListener("beforeunload", function (e) { if (mode !== "idle") { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("pagehide", function () { if (mode !== "idle") { try { Object.keys(P).forEach(function (id) { sendTo(id, { t: "bye" }); }); } catch (e) {} } });
+$("nameIn").value = me.name;
+(function () {
+  var m = /^#R\/([A-Za-z0-9]{6})$/.exec(location.hash);
+  if (m) { showTab("g"); $("gCode").value = m[1].toUpperCase(); }
+})();
+</script>
+</body>
+</html>
